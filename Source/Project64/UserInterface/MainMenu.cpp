@@ -297,7 +297,6 @@ void CMainMenu::OnSettings(HWND hWnd)
 
 void CMainMenu::OnSupportProject64(HWND hWnd)
 {
-    CSupportWindow(m_Gui->Support()).Show(hWnd, false);
 }
 
 bool CMainMenu::ProcessMessage(HWND hWnd, DWORD /*FromAccelerator*/, DWORD MenuID)
