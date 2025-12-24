@@ -9,11 +9,12 @@ RspAssembler::RspAssembler(asmjit::CodeHolder * CodeHolder, std::string & CodeLo
     asmjit::x86::Assembler(CodeHolder),
     m_CodeLog(CodeLog)
 {
-    setLogger(nullptr);
     setErrorHandler(this);
     addFlags(asmjit::FormatFlags::kHexOffsets);
     addFlags(asmjit::FormatFlags::kHexImms);
     addFlags(asmjit::FormatFlags::kExplainImms);
+    setIndentation(asmjit::FormatIndentationGroup::kCode, 2);
+    setIndentation(asmjit::FormatIndentationGroup::kComment, 2);
 }
 
 void RspAssembler::handleError(asmjit::Error /*err*/, const char * /*message*/, asmjit::BaseEmitter * /*origin*/)
@@ -23,8 +24,13 @@ void RspAssembler::handleError(asmjit::Error /*err*/, const char * /*message*/, 
 
 asmjit::Error RspAssembler::_log(const char * data, size_t size) noexcept
 {
-    stdstr AsmjitLog(std::string(data, size));
+    stdstr AsmjitLog(size == (size_t)-1 ? std::string(data) : std::string(data, size));
     AsmjitLog.Trim("\n");
+    if (AsmjitLog.empty())
+    {
+        return asmjit::kErrorOk;
+    }
+
     std::string::size_type Pos = AsmjitLog.find("0x");
     if (m_NumberSymbols.size() > 0 && Pos != std::string::npos)
     {
@@ -97,7 +103,7 @@ asmjit::Error RspAssembler::_log(const char * data, size_t size) noexcept
             }
         }
     }
-    m_CodeLog.append(stdstr_f("      %s\n", AsmjitLog.c_str()));
+    m_CodeLog.append(stdstr_f("  %s\n", AsmjitLog.c_str()));
     return asmjit::kErrorOk;
 }
 
@@ -146,6 +152,16 @@ void RspAssembler::CompX86regToVariable(void * Variable, const char * VariableNa
         AddNumberSymbol((uint64_t)Variable, VariableName);
     }
     cmp(Reg, asmjit::x86::dword_ptr((uint64_t)Variable));
+}
+
+void RspAssembler::JFunc(void * FunctPtr, const char * FunctName)
+{
+    if (LogAsmCode)
+    {
+        AddNumberSymbol((uint64_t)FunctPtr, FunctName);
+    }
+    mov(asmjit::x86::r11, (uint64_t)FunctPtr);
+    jmp(asmjit::x86::r11);
 }
 
 void RspAssembler::JeLabel(const char * LabelName, asmjit::Label & JumpLabel)
@@ -236,6 +252,15 @@ void RspAssembler::SetgVariable(void * Variable, const char * VariableName)
         AddNumberSymbol((uint64_t)Variable, VariableName);
     }
     setg(asmjit::x86::byte_ptr((uint64_t)Variable));
+}
+
+void RspAssembler::SetnzVariable(void * Variable, const char * VariableName)
+{
+    if (LogAsmCode)
+    {
+        AddNumberSymbol((uint64_t)Variable, VariableName);
+    }
+    setnz(asmjit::x86::byte_ptr((uint64_t)Variable));
 }
 
 void RspAssembler::SetzVariable(void * Variable, const char * VariableName)

@@ -1,5 +1,6 @@
 #pragma once
-#include <Project64-rsp-core/cpu/RSPInstruction.h>
+#include <Project64-rsp-core/cpu/RSPInstruction-x64.h>
+#include <Project64-rsp-core/cpu/RSPInstruction-x86.h>
 #include <memory>
 #include <set>
 #include <stdint.h>
@@ -21,18 +22,21 @@ typedef std::vector<RSPInstruction> RSPInstructions;
 
 class RspCodeBlock
 {
+    typedef std::unordered_map<uint32_t, size_t> InstructionIndexMap;
+
 public:
     typedef std::set<uint32_t> Addresses;
 
-    RspCodeBlock(CRSPSystem & System, uint32_t StartAddress, RspCodeType type, uint32_t EndBlockAddress, RspCodeBlocks & Functions);
+    RspCodeBlock(CRSPSystem & System, uint32_t StartAddress, RspCodeType type, uint32_t DispatchAddress, RspCodeBlocks & Functions);
 
     const Addresses & GetBranchTargets() const;
     void * GetCompiledLocation() const;
-    uint32_t GetEndBlockAddress() const;
+    uint32_t GetDispatchAddress() const;
     const Addresses & GetFunctionCalls() const;
     const RSPInstructions & GetInstructions() const;
     const RspCodeBlock * GetFunctionBlock(uint32_t Address) const;
     uint32_t GetStartAddress() const;
+    size_t InstructionIndex(uint32_t pc) const;
     void SetCompiledLocation(void * CompiledLoction);
     RspCodeType CodeType() const;
     bool IsEnd(uint32_t Address) const;
@@ -44,10 +48,12 @@ private:
     RspCodeBlock & operator=(const RspCodeBlock &);
 
     void Analyze();
+    bool IsAddressInInstructions(uint32_t address) const;
 
     RspCodeBlocks & m_Functions;
-    const uint32_t m_EndBlockAddress;
+    const uint32_t m_DispatchAddress;
     RSPInstructions m_Instructions;
+    InstructionIndexMap m_InstructionIndex;
     uint32_t m_StartAddress;
     RspCodeType m_CodeType;
     CRSPSystem & m_System;

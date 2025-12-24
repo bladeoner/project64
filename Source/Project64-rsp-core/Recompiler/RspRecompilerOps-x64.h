@@ -1,6 +1,7 @@
 #pragma once
 #if defined(__amd64__) || defined(_M_X64)
 
+#include <Project64-rsp-core/Recompiler/asmjit.h>
 #include <Project64-rsp-core/cpu/RSPInterpreterOps.h>
 
 class CRSPSystem;
@@ -10,6 +11,19 @@ class RspCodeBlock;
 
 class CRSPRecompilerOps
 {
+    enum
+    {
+        FunctionStackSize = 40,
+    };
+
+    enum class AccumLocation
+    {
+        High,
+        Middle,
+        Low,
+        Entire,
+    };
+
 public:
     CRSPRecompilerOps(CRSPSystem & System, CRSPRecompiler & Recompiler);
 
@@ -170,7 +184,10 @@ public:
     void ExitCodeBlock(void);
 
 private:
+    void LoadVectorRegister(asmjit::x86::Xmm xmmReg, uint8_t vectorReg, uint8_t e);
     void Cheat_r4300iOpcode(RSPOp::Func FunctAddress, const char * FunctName);
+    bool WriteToVectorDest(uint32_t DestReg, uint32_t PC);
+    bool WriteToAccum(AccumLocation Location, uint32_t PC);
 
     CRSPSystem & m_System;
     CRSPRecompiler & m_Recompiler;
@@ -180,6 +197,11 @@ private:
     RSPPIPELINE_STAGE & m_NextInstruction;
     CRSPRegisters & m_Reg;
     UWORD32 * m_GPR;
+    RSPVector * m_Vect;
+    RSPAccumulator & m_ACCUM;
+    RSPFlag &m_VCOL, &m_VCOH;
+    RSPFlag &m_VCCL, &m_VCCH;
+    RSPFlag & m_VCE;
     RspAssembler *& m_Assembler;
     bool m_DelayAffectBranch;
 };

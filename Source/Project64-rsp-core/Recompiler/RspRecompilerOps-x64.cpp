@@ -5,7 +5,7 @@
 #include <Project64-rsp-core/Recompiler/RspAssembler.h>
 #include <Project64-rsp-core/Recompiler/RspCodeBlock.h>
 #include <Project64-rsp-core/Recompiler/RspProfiling.h>
-#include <Project64-rsp-core/cpu/RSPInstruction.h>
+#include <Project64-rsp-core/cpu/RSPInstruction-x64.h>
 #include <Project64-rsp-core/cpu/RspSystem.h>
 #include <Settings/Settings.h>
 
@@ -28,6 +28,13 @@ CRSPRecompilerOps::CRSPRecompilerOps(CRSPSystem & System, CRSPRecompiler & Recom
     m_NextInstruction(Recompiler.m_NextInstruction),
     m_Reg(System.m_Reg),
     m_GPR(System.m_Reg.m_GPR),
+    m_Vect(System.m_Reg.m_Vect),
+    m_ACCUM(System.m_Reg.m_ACCUM),
+    m_VCOL(System.m_Reg.m_VCOL),
+    m_VCOH(System.m_Reg.m_VCOH),
+    m_VCCL(System.m_Reg.m_VCCL),
+    m_VCCH(System.m_Reg.m_VCCH),
+    m_VCE(System.m_Reg.m_VCE),
     m_Assembler(Recompiler.m_Assembler),
     m_DelayAffectBranch(false)
 {
@@ -35,7 +42,11 @@ CRSPRecompilerOps::CRSPRecompilerOps(CRSPSystem & System, CRSPRecompiler & Recom
 
 void CRSPRecompilerOps::Cheat_r4300iOpcode(RSPOp::Func FunctAddress, const char * FunctName)
 {
-    m_Recompiler.Log("  %X %s", m_CompilePC, RSPInstruction(m_CompilePC, m_OpCode.Value).NameAndParam().c_str());
+    m_Assembler->comment(stdstr_f("%X %s", m_CompilePC, RSPInstruction(m_CompilePC, m_OpCode.Value).NameAndParam().c_str()).c_str());
+    if (SyncCPU)
+    {
+        m_Assembler->MoveConstToVariable(m_System.m_SP_PC_REG, "RSP PC", m_CompilePC);
+    }
     m_Assembler->MoveConstToVariable(&m_System.m_OpCode.Value, "m_OpCode.Value", m_OpCode.Value);
     m_Assembler->CallThis(&RSPSystem.m_Op, AddressOf(FunctAddress), FunctName);
 }
@@ -56,7 +67,7 @@ void CRSPRecompilerOps::J(void)
 {
     if (m_NextInstruction == RSPPIPELINE_NORMAL)
     {
-        m_Recompiler.Log("  %X %s", m_CompilePC, RSPInstruction(m_CompilePC, m_OpCode.Value).NameAndParam().c_str());
+        m_Assembler->comment(stdstr_f("%X %s", m_CompilePC, RSPInstruction(m_CompilePC, m_OpCode.Value).NameAndParam().c_str()).c_str());
         m_NextInstruction = RSPPIPELINE_DO_DELAY_SLOT;
     }
     else if (m_NextInstruction == RSPPIPELINE_DELAY_SLOT_DONE)
@@ -72,30 +83,6 @@ void CRSPRecompilerOps::J(void)
         {
             m_Assembler->JmpLabel(stdstr_f("0x%X", Target).c_str(), Jump);
         }
-        else
-        {
-            g_Notify->BreakPoint(__FILE__, __LINE__);
-        }
-#ifdef tofix
-#if defined(__amd64__) || defined(_M_X64)
-        if (CRSPSettings::CPUMethod() == RSPCpuMethod::RecompilerTasks && m_OpCode.Value == EndHleTaskOp::J_0x1118)
-        {
-            m_NextInstruction = RSPPIPELINE_DO_DELAY_SLOT_TASK_EXIT;
-        }
-#endif
-        JmpLabel32("BranchToJump", 0);
-        m_Recompiler.Branch_AddRef((m_OpCode.target << 2) & 0xFFC, (uint32_t *)(RecompPos - 4));
-        m_NextInstruction = RSPPIPELINE_FINISH_SUB_BLOCK;
-#endif
-    }
-    else if (m_NextInstruction == RSPPIPELINE_DELAY_SLOT_EXIT_DONE || m_NextInstruction == RSPPIPELINE_DELAY_SLOT_TASK_EXIT_DONE)
-    {
-        g_Notify->BreakPoint(__FILE__, __LINE__);
-#ifdef tofix
-        MoveConstToVariable((m_OpCode.target << 2) & 0xFFC, m_System.m_SP_PC_REG, "RSP PC");
-        m_NextInstruction = m_NextInstruction == RSPPIPELINE_DELAY_SLOT_EXIT_DONE ? RSPPIPELINE_FINISH_SUB_BLOCK : RSPPIPELINE_FINISH_TASK_SUB_BLOCK;
-        Ret();
-#endif
     }
     else
     {
@@ -111,21 +98,45 @@ void CRSPRecompilerOps::JAL(void)
 {
     if (m_NextInstruction == RSPPIPELINE_NORMAL)
     {
-        m_Recompiler.Log("  %X %s", m_CompilePC, RSPInstruction(m_CompilePC, m_OpCode.Value).NameAndParam().c_str());
+        m_Assembler->comment(stdstr_f("%X %s", m_CompilePC, RSPInstruction(m_CompilePC, m_OpCode.Value).NameAndParam().c_str()).c_str());
         m_Assembler->MoveConstToVariable(&m_GPR[31].UW, "RA.W", (m_CompilePC + 8) & 0x1FFC);
         m_NextInstruction = RSPPIPELINE_DO_DELAY_SLOT;
     }
-    else if (m_NextInstruction == RSPPIPELINE_DELAY_SLOT_DONE)
+    else if (m_NextInstruction == RSPPIPELINE_DELAY_SLOT_DONE || m_NextInstruction == RSPPIPELINE_DELAY_SLOT_DONE_BRANCH_TARGET)
     {
-        uint32_t targetAddress = (m_OpCode.target << 2) & 0x1FFC;
-        const RspCodeBlock * FunctionBlock = m_CurrentBlock ? m_CurrentBlock->GetFunctionBlock(targetAddress) : nullptr;
-        if (FunctionBlock != nullptr)
+        uint32_t Target = (m_OpCode.target << 2) & 0x1FFC;
+        if (m_CurrentBlock->IsEnd(m_CompilePC) && m_CurrentBlock->CodeType() == RspCodeType_TASK)
         {
-            m_Assembler->CallFunc(FunctionBlock->GetCompiledLocation(), stdstr_f("0x%X", targetAddress).c_str());
+            m_Assembler->MoveConstToVariable(m_System.m_SP_PC_REG, "RSP PC", Target);
+            ExitCodeBlock();
         }
         else
         {
-            g_Notify->BreakPoint(__FILE__, __LINE__);
+            const RspCodeBlock * FunctionBlock = m_CurrentBlock ? m_CurrentBlock->GetFunctionBlock(Target) : nullptr;
+            if (FunctionBlock != nullptr)
+            {
+                if (SyncCPU)
+                {
+                    m_Assembler->MoveConstToVariable(m_System.m_SP_PC_REG, "RSP PC", Target);
+                    m_Assembler->mov(asmjit::x86::rdx, asmjit::imm(0x2000));
+                    m_Assembler->mov(asmjit::x86::r8, asmjit::imm(Target & 0xFFF));
+                    m_Assembler->CallThis(RSPSystem.SyncSystem(), AddressOf(&CRSPSystem::ExecuteOps), "CRSPSystem::ExecuteOps");
+                    m_Assembler->CallThis(&RSPSystem, AddressOf(&CRSPSystem::BasicSyncCheck), "CRSPSystem::BasicSyncCheck");
+                }
+                m_Assembler->CallFunc(FunctionBlock->GetCompiledLocation(), stdstr_f("0x%X", Target).c_str());
+            }
+            else
+            {
+                g_Notify->BreakPoint(__FILE__, __LINE__);
+            }
+        }
+
+        if (m_NextInstruction == RSPPIPELINE_DELAY_SLOT_DONE_BRANCH_TARGET)
+        {
+            asmjit::Label Jump = m_Assembler->newLabel();
+            m_Assembler->JmpLabel(stdstr_f("0x%X_continue", m_CompilePC).c_str(), Jump);
+            m_Recompiler.CompileOpcode((m_CompilePC + 4) & 0x1FFC);
+            m_Assembler->bind(Jump);
         }
     }
     else
@@ -141,7 +152,7 @@ void CRSPRecompilerOps::BEQ(void)
     if (m_NextInstruction == RSPPIPELINE_NORMAL)
     {
         RSPInstruction Instruction(m_CompilePC, m_OpCode.Value);
-        m_Recompiler.Log("  %X %s", m_CompilePC, Instruction.NameAndParam().c_str());
+        m_Assembler->comment(stdstr_f("%X %s", m_CompilePC, Instruction.NameAndParam().c_str()).c_str());
         m_DelayAffectBranch = Instruction.DelaySlotAffectBranch();
         if (!m_DelayAffectBranch)
         {
@@ -202,7 +213,7 @@ void CRSPRecompilerOps::BEQ(void)
                 m_Assembler->CompX86regToVariable(x86_EAX, &m_GPR[m_OpCode.rs].W, GPR_Name(m_OpCode.rs));
 #endif
             }
-            if (Target == m_CurrentBlock->GetEndBlockAddress())
+            if (Target == m_CurrentBlock->GetDispatchAddress())
             {
                 asmjit::Label ContinueLabel = m_Assembler->newLabel();
                 m_Assembler->JneLabel(stdstr_f("Continue-%X", m_CompilePC).c_str(), ContinueLabel);
@@ -261,31 +272,34 @@ void CRSPRecompilerOps::BNE(void)
             m_NextInstruction = RSPPIPELINE_DO_DELAY_SLOT;
             return;
         }
-        g_Notify->BreakPoint(__FILE__, __LINE__);
-#ifdef tofix
         if (m_OpCode.rs == 0 && m_OpCode.rt == 0)
         {
+            g_Notify->BreakPoint(__FILE__, __LINE__);
+#ifdef tofix
             MoveConstByteToVariable(0, &BranchCompare, "BranchCompare");
             m_NextInstruction = RSPPIPELINE_DO_DELAY_SLOT;
+#endif
             return;
         }
 
         if (m_OpCode.rt == 0)
         {
-            CompConstToVariable(0, &m_GPR[m_OpCode.rs].W, GPR_Name(m_OpCode.rs));
+            m_Assembler->CompConstToVariable(&m_GPR[m_OpCode.rs].W, GPR_Name(m_OpCode.rs), 0);
         }
         else if (m_OpCode.rs == 0)
         {
-            CompConstToVariable(0, &m_GPR[m_OpCode.rt].W, GPR_Name(m_OpCode.rt));
+            m_Assembler->CompConstToVariable(&m_GPR[m_OpCode.rt].W, GPR_Name(m_OpCode.rt), 0);
         }
         else
         {
+            g_Notify->BreakPoint(__FILE__, __LINE__);
+#ifdef tofix
             MoveVariableToX86reg(&m_GPR[m_OpCode.rt].W, GPR_Name(m_OpCode.rt), x86_EAX);
             CompX86regToVariable(x86_EAX, &m_GPR[m_OpCode.rs].W, GPR_Name(m_OpCode.rs));
-        }
-        SetnzVariable(&BranchCompare, "BranchCompare");
-        m_NextInstruction = RSPPIPELINE_DO_DELAY_SLOT;
 #endif
+        }
+        m_Assembler->SetnzVariable(&BranchCompare, "BranchCompare");
+        m_NextInstruction = RSPPIPELINE_DO_DELAY_SLOT;
     }
     else if (m_NextInstruction == RSPPIPELINE_DELAY_SLOT_DONE)
     {
@@ -315,20 +329,36 @@ void CRSPRecompilerOps::BNE(void)
 #endif
             }
             asmjit::Label Jump;
+            if (m_Recompiler.FindBranchJump(Target, Jump))
+            {
+                m_Assembler->JneLabel(stdstr_f("0x%X", Target).c_str(), Jump);
+            }
+            else
+            {
+                const RspCodeBlock * FunctionBlock = m_CurrentBlock ? m_CurrentBlock->GetFunctionBlock(Target) : nullptr;
+                if (FunctionBlock != nullptr)
+                {
+                    asmjit::Label ContinuJump = m_Assembler->newLabel();
+                    m_Assembler->JeLabel(stdstr_f("continue_0x%X", m_CompilePC).c_str(), ContinuJump);
+                    m_Assembler->add(asmjit::x86::rsp, FunctionStackSize);
+                    m_Assembler->JFunc(FunctionBlock->GetCompiledLocation(), stdstr_f("0x%X", Target).c_str());
+                    m_Assembler->bind(ContinuJump);
+                }
+                else
+                {
+                    g_Notify->BreakPoint(__FILE__, __LINE__);
+                }
+            }
+        }
+        else
+        {
+            asmjit::Label Jump;
             if (!m_Recompiler.FindBranchJump(Target, Jump))
             {
                 g_Notify->BreakPoint(__FILE__, __LINE__);
             }
-            m_Assembler->JneLabel(stdstr_f("0x%X", Target).c_str(), Jump);
-        }
-        else
-        {
-            g_Notify->BreakPoint(__FILE__, __LINE__);
-#ifdef tofix
-            // Take a look at the branch compare variable
-            CompConstToVariable(true, &BranchCompare, "BranchCompare");
-            JeLabel32("BranchNotEqual", 0);
-#endif
+            m_Assembler->CompConstToVariable(&BranchCompare, "BranchCompare", true);
+            m_Assembler->JeLabel(stdstr_f("0x%X", Target).c_str(), Jump);
         }
     }
     else if (m_NextInstruction == RSPPIPELINE_DELAY_SLOT_EXIT_DONE)
@@ -642,7 +672,7 @@ void CRSPRecompilerOps::Special_JR(void)
 
     if (m_NextInstruction == RSPPIPELINE_NORMAL)
     {
-        m_Recompiler.Log("  %X %s", m_CompilePC, RSPInstruction(m_CompilePC, m_OpCode.Value).NameAndParam().c_str());
+        m_Assembler->comment(stdstr_f("%X %s", m_CompilePC, RSPInstruction(m_CompilePC, m_OpCode.Value).NameAndParam().c_str()).c_str());
         m_Assembler->MoveVariableToX86reg(asmjit::x86::eax, &m_GPR[m_OpCode.rs].W, GPR_Name(m_OpCode.rs));
         m_Assembler->and_(asmjit::x86::eax, 0x1FFC);
         m_Assembler->MoveX86regToVariable(m_System.m_SP_PC_REG, "RSP PC", asmjit::x86::eax);
@@ -734,7 +764,7 @@ void CRSPRecompilerOps::Special_AND(void)
 
 void CRSPRecompilerOps::Special_OR(void)
 {
-    g_Notify->BreakPoint(__FILE__, __LINE__);
+    Cheat_r4300iOpcode(&RSPOp::Special_OR, "RSPOp::Special_OR");
 }
 
 void CRSPRecompilerOps::Special_XOR(void)
@@ -901,7 +931,38 @@ void CRSPRecompilerOps::Vector_VMADH(void)
 
 void CRSPRecompilerOps::Vector_VADD(void)
 {
-    Cheat_r4300iOpcode(&RSPOp::Vector_VADD, "RSPOp::Vector_VADD");
+    bool writeToDest = WriteToVectorDest(m_OpCode.sa, m_CompilePC);
+    bool writeToAccum = WriteToAccum(AccumLocation::Low, m_CompilePC);
+
+    m_Assembler->comment(stdstr_f("%X %s", m_CompilePC, RSPInstruction(m_CompilePC, m_OpCode.Value).NameAndParam().c_str()).c_str());
+    if (writeToAccum || writeToDest)
+    {
+        m_Assembler->mov(asmjit::x86::r11, (uint64_t)&m_Vect[m_OpCode.vs].u64(0));
+        m_Assembler->movdqa(asmjit::x86::xmm0, asmjit::x86::ptr(asmjit::x86::r11));
+        LoadVectorRegister(asmjit::x86::xmm1, m_OpCode.vt, m_OpCode.e);
+        m_Assembler->mov(asmjit::x86::r11, (uint64_t)m_VCOL.Value());
+        m_Assembler->movdqa(asmjit::x86::xmm2, asmjit::x86::ptr(asmjit::x86::r11));
+    }
+    if (writeToAccum)
+    {
+        m_Assembler->movdqa(asmjit::x86::xmm3, asmjit::x86::xmm0);
+        m_Assembler->paddw(asmjit::x86::xmm3, asmjit::x86::xmm1);
+        m_Assembler->paddw(asmjit::x86::xmm3, asmjit::x86::xmm2);
+        m_Assembler->mov(asmjit::x86::r11, (uint64_t)&m_ACCUM.Low(0));
+        m_Assembler->movdqa(asmjit::x86::ptr(asmjit::x86::r11), asmjit::x86::xmm3);
+    }
+    if (writeToDest)
+    {
+        m_Assembler->paddsw(asmjit::x86::xmm0, asmjit::x86::xmm1);
+        m_Assembler->paddsw(asmjit::x86::xmm0, asmjit::x86::xmm2);
+        m_Assembler->mov(asmjit::x86::r11, (uint64_t)&m_Vect[m_OpCode.vd].u64(0));
+        m_Assembler->movdqa(asmjit::x86::ptr(asmjit::x86::r11), asmjit::x86::xmm0);
+    }
+    m_Assembler->pxor(asmjit::x86::xmm0, asmjit::x86::xmm0);
+    m_Assembler->mov(asmjit::x86::r11, (uint64_t)m_VCOL.Value());
+    m_Assembler->movdqa(asmjit::x86::ptr(asmjit::x86::r11), asmjit::x86::xmm0);
+    m_Assembler->mov(asmjit::x86::r11, (uint64_t)m_VCOH.Value());
+    m_Assembler->movdqa(asmjit::x86::ptr(asmjit::x86::r11), asmjit::x86::xmm0);
 }
 
 void CRSPRecompilerOps::Vector_VSUB(void)
@@ -916,7 +977,7 @@ void CRSPRecompilerOps::Vector_VABS(void)
 
 void CRSPRecompilerOps::Vector_VADDC(void)
 {
-    g_Notify->BreakPoint(__FILE__, __LINE__);
+    Cheat_r4300iOpcode(&RSPOp::Vector_VADDC, "RSPOp::Vector_VADDC");
 }
 
 void CRSPRecompilerOps::Vector_VSUBC(void)
@@ -1077,7 +1138,7 @@ void CRSPRecompilerOps::Opcode_LRV(void)
 
 void CRSPRecompilerOps::Opcode_LPV(void)
 {
-    g_Notify->BreakPoint(__FILE__, __LINE__);
+    Cheat_r4300iOpcode(&RSPOp::LPV, "RSPOp::LPV");
 }
 
 void CRSPRecompilerOps::Opcode_LUV(void)
@@ -1176,7 +1237,7 @@ void CRSPRecompilerOps::UnknownOpcode(void)
 
 void CRSPRecompilerOps::EnterCodeBlock(void)
 {
-    m_Assembler->sub(asmjit::x86::rsp, 40);
+    m_Assembler->sub(asmjit::x86::rsp, FunctionStackSize);
     if (Profiling && m_CurrentBlock->CodeType() == RspCodeType_TASK)
     {
         m_Assembler->mov(asmjit::x86::rcx, asmjit::imm((uintptr_t)m_CompilePC));
@@ -1190,8 +1251,147 @@ void CRSPRecompilerOps::ExitCodeBlock(void)
     {
         m_Assembler->CallFunc(AddressOf(&StopTimer), "StopTimer");
     }
-    m_Assembler->add(asmjit::x86::rsp, 40);
+    m_Assembler->add(asmjit::x86::rsp, FunctionStackSize);
     m_Assembler->ret();
+}
+
+void CRSPRecompilerOps::LoadVectorRegister(asmjit::x86::Xmm xmmReg, uint8_t vectorReg, uint8_t e)
+{
+    if (e < 8)
+    {
+        m_Assembler->mov(asmjit::x86::r11, (uint64_t)&m_Vect[vectorReg].u64(0));
+        m_Assembler->movdqa(xmmReg, asmjit::x86::ptr(asmjit::x86::r11));
+        if (e > 1)
+        {
+            switch (e)
+            {
+            case 2: // 0q
+                m_Assembler->pshuflw(xmmReg, xmmReg, _MM_SHUFFLE(3, 3, 1, 1));
+                m_Assembler->pshufhw(xmmReg, xmmReg, _MM_SHUFFLE(3, 3, 1, 1));
+                break;
+            case 3: // 1q
+                m_Assembler->pshuflw(xmmReg, xmmReg, _MM_SHUFFLE(2, 2, 0, 0));
+                m_Assembler->pshufhw(xmmReg, xmmReg, _MM_SHUFFLE(2, 2, 0, 0));
+                break;
+            case 4: // 0h
+                m_Assembler->pshuflw(xmmReg, xmmReg, _MM_SHUFFLE(3, 3, 3, 3));
+                m_Assembler->pshufhw(xmmReg, xmmReg, _MM_SHUFFLE(3, 3, 3, 3));
+                break;
+            case 5: // 1h
+                m_Assembler->pshuflw(xmmReg, xmmReg, _MM_SHUFFLE(2, 2, 2, 2));
+                m_Assembler->pshufhw(xmmReg, xmmReg, _MM_SHUFFLE(2, 2, 2, 2));
+                break;
+            case 6: // 2h
+                m_Assembler->pshuflw(xmmReg, xmmReg, _MM_SHUFFLE(1, 1, 1, 1));
+                m_Assembler->pshufhw(xmmReg, xmmReg, _MM_SHUFFLE(1, 1, 1, 1));
+                break;
+            case 7: // 3h
+                m_Assembler->pshuflw(xmmReg, xmmReg, _MM_SHUFFLE(0, 0, 0, 0));
+                m_Assembler->pshufhw(xmmReg, xmmReg, _MM_SHUFFLE(0, 0, 0, 0));
+                break;
+            }
+        }
+    }
+    else
+    {
+        m_Assembler->mov(asmjit::x86::r11, (uint64_t)&m_Vect[vectorReg].s16(e));
+        m_Assembler->movzx(asmjit::x86::eax, asmjit::x86::word_ptr(asmjit::x86::r11));
+        m_Assembler->movd(xmmReg, asmjit::x86::eax);
+        m_Assembler->pshuflw(xmmReg, xmmReg, _MM_SHUFFLE(0, 0, 0, 0));
+        m_Assembler->pshufd(xmmReg, xmmReg, _MM_SHUFFLE(0, 0, 0, 0));
+    }
+}
+
+bool CRSPRecompilerOps::WriteToVectorDest(uint32_t DestReg, uint32_t PC)
+{
+    const RSPInstructions & instructions = m_CurrentBlock->GetInstructions();
+    for (size_t i = m_CurrentBlock->InstructionIndex(PC) + 1, n = instructions.size(); i < n; i++)
+    {
+        const RSPInstruction & instruction = instructions[i];
+        if (instruction.IsJump() || instruction.isBranch())
+        {
+            n = i + 1;
+        }
+        if (instruction.isVectorOp())
+        {
+            if (instruction.SourceReg0() == DestReg || instruction.SourceReg1() == DestReg)
+            {
+                return true;
+            }
+            if (instruction.DestReg() == DestReg)
+            {
+                return false;
+            }
+        }
+        if ((instruction.isVectorStoreOp() && instruction.SourceReg0() == DestReg) ||
+            (instruction.isMfCop2() && instruction.SourceReg0() == DestReg))
+        {
+            return true;
+        }
+        if (instruction.isMtCop2() && instruction.DestReg() == DestReg)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool CRSPRecompilerOps::WriteToAccum(AccumLocation Location, uint32_t PC)
+{
+    const RSPInstructions & instructions = m_CurrentBlock->GetInstructions();
+    for (size_t i = m_CurrentBlock->InstructionIndex(PC) + 1, n = instructions.size(); i < n; i++)
+    {
+        const RSPInstruction & instruction = instructions[i];
+        if (instruction.IsJump() || instruction.isBranch())
+        {
+            n = i + 1;
+        }
+
+        switch (Location)
+        {
+        case AccumLocation::Low:
+            if (instruction.ReadAccumLow())
+            {
+                return true;
+            }
+            if (instruction.SetAccumLow())
+            {
+                return false;
+            }
+            break;
+        case AccumLocation::Middle:
+            if (instruction.ReadAccumMid())
+            {
+                return true;
+            }
+            if (instruction.SetAccumMid())
+            {
+                return false;
+            }
+            break;
+        case AccumLocation::High:
+            if (instruction.ReadAccumHigh())
+            {
+                return true;
+            }
+            if (instruction.SetAccumHigh())
+            {
+                return false;
+            }
+            break;
+        case AccumLocation::Entire:
+            if (instruction.ReadAccumLow() || instruction.ReadAccumMid() || instruction.ReadAccumHigh())
+            {
+                return true;
+            }
+            if (instruction.SetAccumLow() && instruction.SetAccumMid() && instruction.SetAccumHigh())
+            {
+                return false;
+            }
+            break;
+        }
+    }
+    return true;
 }
 
 #endif

@@ -45,6 +45,11 @@ CRSPRecompiler::~CRSPRecompiler()
     }
 }
 
+void CRSPRecompiler::ClearBranchJump()
+{
+    m_BranchTargets.clear();
+}
+
 void CRSPRecompiler::AddBranchJump(uint32_t Target)
 {
     BranchTargets::iterator it = m_BranchTargets.find(Target);
@@ -437,6 +442,28 @@ void CRSPRecompiler::Reset()
     }
 }
 
+bool CRSPRecompiler::CompileSubFunctions(RspCodeBlocks & Functions, const RspCodeBlock::Addresses & Addresses)
+{
+    for (RspCodeBlock::Addresses::iterator itr = Addresses.begin(); itr != Addresses.end(); itr++)
+    {
+        RspCodeBlocks::iterator funcitr = Functions.find(*itr);
+        if (funcitr == Functions.end())
+        {
+            return false;
+        }
+        RspCodeBlockPtr & FuncCodeBlock = funcitr->second;
+        if (FuncCodeBlock->GetCompiledLocation() == nullptr)
+        {
+            if (!CompileSubFunctions(Functions, FuncCodeBlock->GetFunctionCalls()))
+            {
+                return nullptr;
+            }
+            CompileCodeBlock(*FuncCodeBlock);
+        }
+    }
+    return true;
+}
+
 void CRSPRecompiler::CompileCodeBlock(RspCodeBlock & block)
 {
     SetupRspAssembler();
@@ -445,6 +472,14 @@ void CRSPRecompiler::CompileCodeBlock(RspCodeBlock & block)
     void * funcPtr = RecompPos;
     m_CompilePC = block.GetStartAddress();
     Log("====== Block %d ======", m_BlockID++);
+    if (block.CodeType() == RspCodeType_TASK)
+    {
+        Log("code type: task");
+    }
+    else if (block.CodeType() == RspCodeType_SUBROUTINE)
+    {
+        Log("code type: subroutine");
+    }
     Log("asm code at: %016llX", (uint64_t)funcPtr);
     Log("Jump table: %X", Table);
     Log("Start of block: %X", m_CompilePC);
@@ -452,6 +487,7 @@ void CRSPRecompiler::CompileCodeBlock(RspCodeBlock & block)
     m_RecompilerOps.EnterCodeBlock();
 
     const RspCodeBlock::Addresses & branchTargets = block.GetBranchTargets();
+    ClearBranchJump();
     for (uint32_t Target : branchTargets)
     {
         AddBranchJump(Target);
@@ -469,12 +505,17 @@ void CRSPRecompiler::CompileCodeBlock(RspCodeBlock & block)
         m_CompilePC = instruction.Address();
         m_OpCode.Value = instruction.Value();
 
-        if (m_NextInstruction == RSPPIPELINE_NORMAL)
+        BranchTargets::const_iterator labelItr = m_BranchTargets.find(m_CompilePC);
+        bool JumpTarget = false;
+        if (labelItr != m_BranchTargets.end())
         {
-            BranchTargets::const_iterator labelItr = m_BranchTargets.find(m_CompilePC);
-            if (labelItr != m_BranchTargets.end())
+            if (m_NextInstruction == RSPPIPELINE_NORMAL)
             {
                 m_Assembler->bind(labelItr->second);
+            }
+            else if (m_NextInstruction == RSPPIPELINE_DELAY_SLOT)
+            {
+                JumpTarget = true;
             }
         }
         (m_RecompilerOps.*RSP_Recomp_Opcode[m_OpCode.op])();
@@ -493,10 +534,11 @@ void CRSPRecompiler::CompileCodeBlock(RspCodeBlock & block)
             instructionIndex += 1;
             break;
         case RSPPIPELINE_DELAY_SLOT:
-            m_NextInstruction = RSPPIPELINE_DELAY_SLOT_DONE;
+            m_NextInstruction = JumpTarget ? RSPPIPELINE_DELAY_SLOT_DONE_BRANCH_TARGET : RSPPIPELINE_DELAY_SLOT_DONE;
             instructionIndex -= 1;
             break;
         case RSPPIPELINE_DELAY_SLOT_DONE:
+        case RSPPIPELINE_DELAY_SLOT_DONE_BRANCH_TARGET:
             m_NextInstruction = RSPPIPELINE_NORMAL;
             instructionIndex += 2;
             break;
@@ -520,6 +562,7 @@ void CRSPRecompiler::CompileCodeBlock(RspCodeBlock & block)
     }
 
     block.SetCompiledLocation(funcPtr);
+    m_Assembler->finalize();
     m_CodeHolder.relocateToBase((uint64_t)funcPtr);
     size_t codeSize = m_CodeHolder.codeSize();
     m_CodeHolder.copyFlattenedData(funcPtr, codeSize);
@@ -535,28 +578,46 @@ void CRSPRecompiler::CompileCodeBlock(RspCodeBlock & block)
     m_CurrentBlock = nullptr;
 }
 
-void * CRSPRecompiler::CompileHLETask(uint32_t Address, RspCodeBlocks & Functions, const uint32_t EndBlockAddress)
+void CRSPRecompiler::CompileOpcode(uint32_t PC)
+{
+    const RSPInstructions & instructions = m_CurrentBlock->GetInstructions();
+    bool found = false;
+    for (size_t i = 0, n = instructions.size(); i < n; i++)
+    {
+        if (instructions[i].Address() != PC)
+        {
+            continue;
+        }
+        m_CompilePC = instructions[i].Address();
+        m_OpCode.Value = instructions[i].Value();
+        found = true;
+        break;
+    }
+
+    if (!found)
+    {
+        g_Notify->BreakPoint(__FILE__, __LINE__);
+        return;
+    }
+    BranchTargets::const_iterator labelItr = m_BranchTargets.find(m_CompilePC);
+    if (labelItr != m_BranchTargets.end())
+    {
+        m_Assembler->bind(labelItr->second);
+    }
+    (m_RecompilerOps.*RSP_Recomp_Opcode[m_OpCode.op])();
+}
+
+void * CRSPRecompiler::CompileHLETask(uint32_t Address, RspCodeBlocks & Functions, const uint32_t DispatchAddress)
 {
     void * funcPtr = nullptr;
     bool compile = true;
     if (compile)
     {
         // have code block in CRSPRecompiler and pass to RspCodeBlock, so it is the owner and sub functions are analysised once
-        RspCodeBlock CodeInfo(m_System, Address, RspCodeType_TASK, EndBlockAddress, Functions);
-
-        RspCodeBlock::Addresses FunctionCalls = CodeInfo.GetFunctionCalls();
-        for (RspCodeBlock::Addresses::iterator itr = FunctionCalls.begin(); itr != FunctionCalls.end(); itr++)
+        RspCodeBlock CodeInfo(m_System, Address, RspCodeType_TASK, DispatchAddress, Functions);
+        if (!CompileSubFunctions(Functions, CodeInfo.GetFunctionCalls()))
         {
-            RspCodeBlocks::iterator funcitr = Functions.find(*itr);
-            if (funcitr == Functions.end())
-            {
-                return nullptr;
-            }
-            RspCodeBlockPtr & FuncCodeBlock = funcitr->second;
-            if (FuncCodeBlock->GetCompiledLocation() == nullptr)
-            {
-                CompileCodeBlock(*FuncCodeBlock);
-            }
+            return nullptr;
         }
         CompileCodeBlock(CodeInfo);
         funcPtr = CodeInfo.GetCompiledLocation();
@@ -651,10 +712,9 @@ void CRSPRecompiler::SetupRspAssembler()
     m_CodeHolder.reset();
     m_CodeHolder.init(m_Environment);
     m_CodeHolder.setErrorHandler(this);
-    m_CodeHolder.setLogger(LogAsmCode ? nullptr : nullptr);
 
     m_Assembler = new RspAssembler(&m_CodeHolder, m_CodeLog);
-    m_Assembler->setLogger(LogAsmCode ? m_Assembler : nullptr);
+    m_CodeHolder.setLogger(LogAsmCode ? m_Assembler : nullptr);
 }
 
 void * CRSPRecompiler::GetAddressOf(int value, ...)

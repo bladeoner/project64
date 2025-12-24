@@ -25,7 +25,7 @@ public:
     ~CRSPRecompiler();
 
     void Reset();
-    void * CompileHLETask(uint32_t Address, RspCodeBlocks & Functions, const uint32_t EndBlockAddress);
+    void * CompileHLETask(uint32_t Address, RspCodeBlocks & Functions, const uint32_t DispatchAddress);
     void Log(_Printf_format_string_ const char * Text, ...);
 
     static void * GetAddressOf(int32_t value, ...);
@@ -35,10 +35,13 @@ private:
     CRSPRecompiler(const CRSPRecompiler &);
     CRSPRecompiler & operator=(const CRSPRecompiler &);
 
+    void ClearBranchJump();
     void AddBranchJump(uint32_t Target);
     bool FindBranchJump(uint32_t Target, asmjit::Label & Jump);
     void BuildRecompilerCPU(void);
+    bool CompileSubFunctions(RspCodeBlocks & Functions, const RspCodeBlock::Addresses & Addresses);
     void CompileCodeBlock(RspCodeBlock & block);
+    void CompileOpcode(uint32_t PC);
     void handleError(asmjit::Error err, const char * message, asmjit::BaseEmitter * origin);
     void SetupRspAssembler();
 
