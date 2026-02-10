@@ -30,7 +30,8 @@ CRSPRecompiler::CRSPRecompiler(CRSPSystem & System) :
     m_BlockID(0),
     m_CompilePC(0),
     m_OpCode(System.m_OpCode),
-    m_Assembler(nullptr)
+    m_Assembler(nullptr),
+    m_RegState(m_RecompilerOps)
 {
     m_Environment = asmjit::Environment::host();
     BuildRecompilerCPU();
@@ -509,6 +510,7 @@ void CRSPRecompiler::CompileCodeBlock(RspCodeBlock & block)
         bool JumpTarget = false;
         if (labelItr != m_BranchTargets.end())
         {
+            m_RegState.WriteBackRegisters();
             if (m_NextInstruction == RSPPIPELINE_NORMAL)
             {
                 m_Assembler->bind(labelItr->second);
@@ -519,6 +521,7 @@ void CRSPRecompiler::CompileCodeBlock(RspCodeBlock & block)
             }
         }
         (m_RecompilerOps.*RSP_Recomp_Opcode[m_OpCode.op])();
+        m_RegState.ResetRegProtection();
 
         switch (m_NextInstruction)
         {
@@ -563,6 +566,8 @@ void CRSPRecompiler::CompileCodeBlock(RspCodeBlock & block)
 
     block.SetCompiledLocation(funcPtr);
     m_Assembler->finalize();
+    m_CodeHolder.flatten();
+    m_CodeHolder.resolveUnresolvedLinks();
     m_CodeHolder.relocateToBase((uint64_t)funcPtr);
     size_t codeSize = m_CodeHolder.codeSize();
     m_CodeHolder.copyFlattenedData(funcPtr, codeSize);
