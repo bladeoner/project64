@@ -14,8 +14,17 @@ enum class RspFlags
     MaxFlags
 };
 
+enum class AccumLocation
+{
+    High,
+    Middle,
+    Low,
+    Entire,
+};
+
 class RspAssembler;
 class CRSPRecompilerOps;
+class RspCodeBlock;
 
 class CRspRegState
 {
@@ -23,9 +32,11 @@ public:
     CRspRegState(CRSPRecompilerOps & RecompilerOps);
     ~CRspRegState();
 
+    void SetContext(uint32_t compilePC, const RspCodeBlock * block);
     void ResetRegProtection();
 
     asmjit::x86::Xmm MapXmmZero();
+    asmjit::x86::Xmm MapXmmAccum(AccumLocation location, bool loadSource = true);
     asmjit::x86::Xmm MapXmmReg(uint8_t vreg, uint8_t source, bool loadSource = true);
     asmjit::x86::Xmm MapXmmTemp(bool loadReg, uint8_t vreg, uint8_t e = 0);
     asmjit::x86::Xmm MapSpecificXmmTemp(uint8_t xmmIndex, bool loadReg, uint8_t vreg, uint8_t e = 0);
@@ -43,20 +54,26 @@ public:
     void SetFlagUnknown(RspFlags flag);
 
     bool FreeXmmReg(uint32_t xmmIndex);
+    bool HasMappedRegisters() const;
     void WriteBackRegisters();
+
+    void Reset();
 
 private:
     CRspRegState() = delete;
-    CRspRegState(const CRspRegState &) = delete;
     CRspRegState & operator=(const CRspRegState &) = delete;
+
+    uint32_t GetNextXmmReg() const;
+    uint32_t NextVRegUseDistance(uint8_t vreg) const;
+    uint32_t NextAccumUseDistance() const;
 
     enum class XmmState
     {
         Free,
         Zero,
         Mapped,
+        AccumMapped,
         Temp,
-        Reserved
     };
 
     CRSPRecompilerOps & m_RecompilerOps;
@@ -67,6 +84,8 @@ private:
     bool m_GprIsConst[32];
     uint32_t m_GprConstValue[32];
     bool m_FlagIsZero[static_cast<size_t>(RspFlags::MaxFlags)];
+    uint32_t m_CompilePC;
+    const RspCodeBlock * m_Block;
 };
 
 #endif

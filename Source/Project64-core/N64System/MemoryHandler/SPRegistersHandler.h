@@ -7,6 +7,9 @@
 #include <Project64-rsp-core/cpu/RSPRegisterHandler.h>
 #include <stdint.h>
 
+#pragma warning(push)
+#pragma warning(disable : 4324) // structure was padded due to alignment specifier
+
 class SPRegistersReg
 {
 protected:
@@ -37,9 +40,7 @@ class CN64System;
 class SPRegistersHandler :
     public MemoryHandler,
     private RSPRegisterHandler,
-    private CGameSettings,
     private MIPSInterfaceReg,
-    private CDebugSettings,
     private CLogging
 {
 public:
@@ -81,3 +82,5 @@ private:
     uint32_t & m_RspIntrReg;
     uint64_t & m_PC;
 };
+
+#pragma warning(pop)
